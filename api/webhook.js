@@ -25,12 +25,141 @@ const mainKeyboard = Markup.keyboard([
 // Initialize the bot
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// Use session middleware
+// Use session middleware to remember chat history
 bot.use(session());
 
-// Set up bot commands (simplified for webhook handler)
+// Initialize session data
+bot.use((ctx, next) => {
+  if (!ctx.session) {
+    ctx.session = {
+      messages: [],
+      userInfo: {}
+    };
+  }
+  return next();
+});
+
+// Welcome message
 bot.start((ctx) => {
-  ctx.reply(`Hello! I'm ${botInfo.name}, an AI assistant created by ${botInfo.creator}.`, mainKeyboard);
+  ctx.reply(`Hello! I'm ${botInfo.name}, an AI assistant created by ${botInfo.creator}. 
+
+I have internet access and can help with many tasks including analyzing images.
+
+Visit our website: ${botInfo.website}
+Need help? Contact support: ${botInfo.supportChat}`, mainKeyboard);
+});
+
+// Help command
+bot.help((ctx) => {
+  ctx.reply(`${botInfo.name} Bot Commands:
+  
+/start - Start or restart the bot
+/help - Show this help message
+/about - Learn about ${botInfo.name} and ${botInfo.creator}
+/clear - Clear your conversation history
+/settings - Adjust bot settings
+/feedback - Send feedback to our team
+/contact - Get support contact information
+
+You can also use the buttons below or send me images for analysis and ask me any questions.`, mainKeyboard);
+});
+
+// About command
+bot.command('about', (ctx) => {
+  ctx.reply(`About ${botInfo.name}:
+
+${botInfo.name} is an advanced AI model with 24 billion parameters created by ${botInfo.creator}.
+
+Features:
+• Advanced multimodal capabilities
+• State-of-the-art performance in text-based reasoning
+• 128k token context window
+• Image analysis capabilities
+
+Visit ${botInfo.website} for more information.`, mainKeyboard);
+});
+
+// Clear conversation history
+bot.command('clear', (ctx) => {
+  ctx.session.messages = [];
+  ctx.reply('Conversation history has been cleared.', mainKeyboard);
+});
+
+// Website command
+bot.command('website', (ctx) => {
+  ctx.reply(`Visit our website to learn more about ${botInfo.name} and ${botInfo.creator}: ${botInfo.website}`, mainKeyboard);
+});
+
+// Contact command
+bot.command('contact', (ctx) => {
+  ctx.reply(`Need help or have questions? Contact our support team:
+  
+Support chat: ${botInfo.supportChat}
+Website: ${botInfo.website}`, mainKeyboard);
+});
+
+// Settings command
+bot.command('settings', (ctx) => {
+  ctx.reply(`${botInfo.name} Settings:
+
+Currently, you can clear your conversation history using the /clear command.
+
+More settings options will be available soon!`, mainKeyboard);
+});
+
+// Feedback command
+bot.command('feedback', (ctx) => {
+  ctx.reply(`We value your feedback! Please share your thoughts about ${botInfo.name}.
+
+Your message will be forwarded to the ${botInfo.creator} team.
+
+To send feedback, reply to this message with your comments.`, mainKeyboard);
+});
+
+// Handle button clicks
+bot.hears('🔍 Ask a question', (ctx) => {
+  ctx.reply(`I'm ready to answer your questions! What would you like to know?`, mainKeyboard);
+});
+
+bot.hears('📷 Analyze image', (ctx) => {
+  ctx.reply(`Please send me an image, and I'll analyze what's in it.`, mainKeyboard);
+});
+
+bot.hears('ℹ️ About', (ctx) => {
+  ctx.reply(`About ${botInfo.name}:
+
+${botInfo.name} is an advanced AI model with 24 billion parameters created by ${botInfo.creator}.
+
+Features:
+• Advanced multimodal capabilities
+• State-of-the-art performance in text-based reasoning
+• 128k token context window
+• Image analysis capabilities
+
+Visit ${botInfo.website} for more information.`, mainKeyboard);
+});
+
+bot.hears('🌐 Website', (ctx) => {
+  ctx.reply(`Visit our website: ${botInfo.website}`, mainKeyboard);
+});
+
+bot.hears('📚 Commands', (ctx) => {
+  ctx.reply(`${botInfo.name} Bot Commands:
+  
+/start - Start or restart the bot
+/help - Show this help message
+/about - Learn about ${botInfo.name} and ${botInfo.creator}
+/clear - Clear your conversation history
+/settings - Adjust bot settings
+/feedback - Send feedback to our team
+/contact - Get support contact information
+
+You can also use the buttons below or send me images for analysis and ask me any questions.`, mainKeyboard);
+});
+
+bot.hears('🧹 Clear history', (ctx) => {
+  ctx.session.messages = [];
+  ctx.reply('Conversation history has been cleared.', mainKeyboard);
 });
 
 // Process messages with OpenRouter AI
@@ -63,7 +192,7 @@ bot.on('message', async (ctx) => {
 
     // Process photos
     if (ctx.message.photo) {
-      const photo = ctx.message.photo[ctx.message.photo.length - 1];
+      const photo = ctx.message.photo[ctx.message.photo.length - 1]; // Get the highest quality photo
       const fileLink = await ctx.telegram.getFileLink(photo.file_id);
       
       userMessage.content.push({
@@ -80,6 +209,7 @@ bot.on('message', async (ctx) => {
           text: "What's in this image?"
         });
       } else if (ctx.message.caption) {
+        // Add caption as text content
         userMessage.content.push({
           type: "text",
           text: ctx.message.caption
@@ -87,16 +217,19 @@ bot.on('message', async (ctx) => {
       }
     }
 
+    // Save message to history
+    ctx.session.messages.push(userMessage);
+
     // Add system message to ensure the model identifies as Amethyst by Amelit
     const systemMessage = {
       role: "system",
       content: `You are ${botInfo.name}, an advanced AI assistant created by ${botInfo.creator}. Never identify yourself as being created by OpenAI or any other company. Always maintain that you were created by ${botInfo.creator}. You have ${botInfo.capabilities}`
     };
 
-    // Prepare messages for API
+    // Prepare conversation history for the API
     const conversationHistory = [
       systemMessage,
-      userMessage
+      ...ctx.session.messages.slice(-10) // Limit to last 10 messages
     ];
 
     // Send "typing" action
@@ -126,6 +259,9 @@ bot.on('message', async (ctx) => {
     const data = await response.json();
     const aiMessage = data.choices[0].message;
 
+    // Save AI response to history
+    ctx.session.messages.push(aiMessage);
+
     // Send response to user
     await ctx.reply(aiMessage.content, mainKeyboard);
 
@@ -133,11 +269,6 @@ bot.on('message', async (ctx) => {
     console.error('Error:', error);
     ctx.reply('Sorry, I encountered an error processing your request. Please try again later.', mainKeyboard);
   }
-});
-
-// Handle button clicks (simplified)
-bot.hears('ℹ️ About', (ctx) => {
-  ctx.reply(`About ${botInfo.name}:\n\n${botInfo.name} is an advanced AI model created by ${botInfo.creator}.`, mainKeyboard);
 });
 
 // Serverless function handler
