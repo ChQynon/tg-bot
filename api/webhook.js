@@ -1,9 +1,29 @@
 // Serverless function for handling webhook requests in Vercel
 const { Telegraf, session, Markup } = require('telegraf');
 const fetch = require('node-fetch');
+const fs = require('fs');
+const path = require('path');
 
 // Initialize environment variables
 require('dotenv').config();
+
+// Bot status file
+const STATUS_FILE = path.join('/tmp', 'bot_status.json');
+
+// Get bot status
+function getBotStatus() {
+  try {
+    if (fs.existsSync(STATUS_FILE)) {
+      const data = fs.readFileSync(STATUS_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Error reading status file:', error);
+  }
+  
+  // Default status
+  return { enabled: true, lastRestart: new Date().toISOString() };
+}
 
 // Bot information
 const botInfo = {
@@ -55,6 +75,29 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 // Use session middleware to remember chat history
 bot.use(session());
+
+// Check if bot is enabled
+bot.use((ctx, next) => {
+  const status = getBotStatus();
+  
+  // If bot is disabled, only allow admin messages
+  if (!status.enabled) {
+    // Admin password from environment
+    const adminPassword = process.env.ADMIN_PASSWORD || 'amelit_admin';
+    
+    // Check if message contains admin password to bypass disabled state
+    if (ctx.message && ctx.message.text && ctx.message.text.includes(adminPassword)) {
+      return next();
+    }
+    
+    // For all other messages, send disabled notification
+    return ctx.reply('Бот временно отключен. Пожалуйста, попробуйте позже.', {
+      parse_mode: 'HTML'
+    });
+  }
+  
+  return next();
+});
 
 // Initialize session data
 bot.use((ctx, next) => {
