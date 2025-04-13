@@ -7,10 +7,15 @@ const path = require('path');
 // Initialize environment variables
 require('dotenv').config();
 
-// Bot status file
+// Настройки и тайм-ауты
+const API_TIMEOUT = 12000; // 12 секунд максимальное время ожидания ответа от API
+const DEFAULT_MODEL = "openrouter/optimus-alpha"; // Основная модель
+const FALLBACK_MODEL = "openrouter/auto"; // Резервная модель, если основная не отвечает
+
+// Bot status file (в бессерверной среде try/catch для избежания ошибок при доступе к файлам)
 const STATUS_FILE = path.join('/tmp', 'bot_status.json');
 
-// Get bot status
+// Get bot status with error handling
 function getBotStatus() {
   try {
     if (fs.existsSync(STATUS_FILE)) {
@@ -73,8 +78,10 @@ function formatText(text) {
 // Initialize the bot
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// Use session middleware to remember chat history
-bot.use(session());
+// Использование улучшенной сессии без сохранения в файл
+bot.use(session({ 
+  defaultSession: () => ({ messages: [] }) 
+}));
 
 // Check if bot is enabled
 bot.use((ctx, next) => {
@@ -99,16 +106,85 @@ bot.use((ctx, next) => {
   return next();
 });
 
-// Initialize session data
-bot.use((ctx, next) => {
-  if (!ctx.session) {
-    ctx.session = {
-      messages: [],
-      userInfo: {}
-    };
+// Функция тайм-аута для fetch запросов
+const fetchWithTimeout = async (url, options, timeout = API_TIMEOUT) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    throw error;
   }
-  return next();
-});
+};
+
+// Функция для вызова OpenRouter с повторными попытками и резервной моделью
+async function callOpenRouterAPI(messages, retries = 1) {
+  try {
+    // Первая попытка с основной моделью
+    const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "HTTP-Referer": process.env.SITE_URL,
+        "X-Title": process.env.SITE_NAME,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        "model": DEFAULT_MODEL,
+        "messages": messages
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('OpenRouter API error:', errorData);
+      throw new Error(`API request failed with status ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error(`API call failed (attempt ${retries}):`, error.message);
+    
+    // Если это была последняя попытка или превышен таймаут, используем запасную модель
+    if (retries <= 0 || error.name === 'AbortError') {
+      console.log('Using fallback model due to timeout or max retries reached');
+      try {
+        const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "HTTP-Referer": process.env.SITE_URL,
+            "X-Title": process.env.SITE_NAME,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            "model": FALLBACK_MODEL,
+            "messages": messages
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Fallback API request failed with status ${response.status}`);
+        }
+        
+        return await response.json();
+      } catch (fallbackError) {
+        console.error('Fallback API call failed:', fallbackError.message);
+        throw fallbackError;
+      }
+    }
+    
+    // Иначе повторяем попытку
+    return callOpenRouterAPI(messages, retries - 1);
+  }
+}
 
 // Welcome message
 bot.start((ctx) => {
@@ -322,9 +398,15 @@ bot.on('message', async (ctx) => {
     // Check if message is in a group chat
     const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
     
-    // Get bot information
-    const botUser = await ctx.telegram.getMe();
-    const botUsername = botUser.username;
+    // Get bot information (с защитой от ошибок)
+    let botUsername = '';
+    try {
+      const botUser = await ctx.telegram.getMe();
+      botUsername = botUser.username;
+    } catch (error) {
+      console.error('Error getting bot info:', error);
+      // Продолжаем без имени бота, просто не сможем обрабатывать упоминания
+    }
     
     // Skip message processing in groups unless the bot is mentioned or .ai command is used
     if (isGroup) {
@@ -335,7 +417,7 @@ bot.on('message', async (ctx) => {
       
       // Check if message starts with .ai or mentions the bot
       const isAiCommand = aiCommandRegex.test(messageText) || aiCommandRegex.test(messageCaption);
-      const isBotMentioned = mentionRegex.test(messageText) || mentionRegex.test(messageCaption);
+      const isBotMentioned = botUsername && (mentionRegex.test(messageText) || mentionRegex.test(messageCaption));
       
       // Skip if not a command for the bot in a group chat
       if (!isAiCommand && !isBotMentioned) {
@@ -359,6 +441,15 @@ bot.on('message', async (ctx) => {
           ctx.message.caption = ctx.message.caption.replace(mentionRegex, '').trim();
         }
       }
+      
+      // Если после удаления команды/упоминания сообщение пустое, запросим вопрос
+      if ((!ctx.message.text || ctx.message.text.trim() === '') && 
+          (!ctx.message.caption || ctx.message.caption.trim() === '') &&
+          !ctx.message.photo) {
+        return ctx.reply('Что вы хотите узнать?', {
+          parse_mode: 'HTML'
+        });
+      }
     }
     
     // Continue with normal message processing...
@@ -375,33 +466,56 @@ bot.on('message', async (ctx) => {
       });
     }
 
-    // Process photos
+    // Process photos with защитой от ошибок при загрузке изображений
     if (ctx.message.photo) {
-      const photo = ctx.message.photo[ctx.message.photo.length - 1]; // Get the highest quality photo
-      const fileLink = await ctx.telegram.getFileLink(photo.file_id);
-      
-      userMessage.content.push({
-        type: "image_url",
-        image_url: {
-          url: fileLink.href
-        }
-      });
+      try {
+        const photo = ctx.message.photo[ctx.message.photo.length - 1]; // Get the highest quality photo
+        const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+        
+        userMessage.content.push({
+          type: "image_url",
+          image_url: {
+            url: fileLink.href
+          }
+        });
 
-      // Add a default text prompt if none was provided
-      if (!ctx.message.caption && !ctx.message.text) {
-        userMessage.content.push({
-          type: "text",
-          text: "What's in this image?"
+        // Add a default text prompt if none was provided
+        if (!ctx.message.caption && !ctx.message.text) {
+          userMessage.content.push({
+            type: "text",
+            text: "What's in this image?"
+          });
+        } else if (ctx.message.caption) {
+          // Add caption as text content
+          userMessage.content.push({
+            type: "text",
+            text: ctx.message.caption
+          });
+        }
+      } catch (photoError) {
+        console.error('Error processing photo:', photoError);
+        // Если не удалось обработать фото, продолжаем только с текстом
+        await ctx.reply('Извините, возникла проблема при обработке изображения. Пожалуйста, повторите попытку позже.', {
+          parse_mode: 'HTML'
         });
-      } else if (ctx.message.caption) {
-        // Add caption as text content
-        userMessage.content.push({
-          type: "text",
-          text: ctx.message.caption
-        });
+        if (!ctx.message.text && !ctx.message.caption) {
+          return; // Если нет текста, прекращаем обработку
+        }
       }
     }
 
+    // Проверяем не пустой ли запрос
+    if (userMessage.content.length === 0) {
+      return ctx.reply('Пожалуйста, отправьте текст или изображение.', {
+        parse_mode: 'HTML'
+      });
+    }
+
+    // Сохраняем только последние 5 сообщений в истории для экономии памяти
+    if (ctx.session.messages.length > 10) {
+      ctx.session.messages = ctx.session.messages.slice(-5);
+    }
+    
     // Save message to history
     ctx.session.messages.push(userMessage);
 
@@ -410,63 +524,63 @@ bot.on('message', async (ctx) => {
       role: "system",
       content: `You are ${botInfo.name}, an advanced AI assistant created by ${botInfo.creator}. Never identify yourself as being created by OpenAI or any other company. Always maintain that you were created by ${botInfo.creator}. You have ${botInfo.capabilities}
 
-To make text bold in your responses, you can surround it with double asterisks like this: **important text**. This will be displayed as bold text to the user. Use this feature to highlight important information or for emphasis when appropriate.`
+To make text bold in your responses, you can surround it with double asterisks like this: **important text**. This will be displayed as bold text to the user. Use this feature to highlight important information or for emphasis when appropriate.
+
+Keep your responses concise and to the point. Focus on providing accurate and helpful information.`
     };
 
-    // Prepare conversation history for the API
+    // Prepare conversation history for the API (ограничиваем количество сообщений)
     const conversationHistory = [
       systemMessage,
-      ...ctx.session.messages.slice(-10) // Limit to last 10 messages
+      ...ctx.session.messages.slice(-3) // Limit to just last 3 messages for faster response
     ];
 
     // Send "typing" action
     await ctx.replyWithChatAction('typing');
 
-    // Call OpenRouter API
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "HTTP-Referer": process.env.SITE_URL,
-        "X-Title": process.env.SITE_NAME,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        "model": "openrouter/optimus-alpha",
-        "messages": conversationHistory
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('OpenRouter API error:', errorData);
-      throw new Error(`API request failed with status ${response.status}`);
-    }
-
-    const data = await response.json();
-    const aiMessage = data.choices[0].message;
-
-    // Save AI response to history
-    ctx.session.messages.push(aiMessage);
-
-    // Format the response text with bold formatting
-    const formattedResponse = formatText(aiMessage.content);
-
-    // Send response to user with HTML formatting
     try {
-      await ctx.reply(formattedResponse, {
+      // Вызываем API с улучшенным обработчиком и таймаутом
+      const data = await callOpenRouterAPI(conversationHistory);
+      const aiMessage = data.choices[0].message;
+
+      // Save AI response to history
+      ctx.session.messages.push(aiMessage);
+
+      // Format the response text with bold formatting
+      const formattedResponse = formatText(aiMessage.content);
+
+      // Send response to user with HTML formatting
+      try {
+        await ctx.reply(formattedResponse, {
+          ...mainKeyboard,
+          parse_mode: 'HTML'
+        });
+      } catch (htmlError) {
+        console.error('HTML formatting error:', htmlError);
+        // Fallback to plain text if HTML formatting fails
+        await ctx.reply(aiMessage.content, mainKeyboard);
+      }
+    } catch (apiError) {
+      console.error('API error:', apiError);
+      
+      // Отправляем пользователю сообщение о проблеме
+      await ctx.reply('Извините, возникла проблема при получении ответа. Пожалуйста, повторите ваш запрос через несколько секунд.', {
         ...mainKeyboard,
         parse_mode: 'HTML'
       });
-    } catch (htmlError) {
-      console.error('HTML formatting error:', htmlError);
-      // Fallback to plain text if HTML formatting fails
-      await ctx.reply(aiMessage.content, mainKeyboard);
     }
 
   } catch (error) {
-    console.error('Error:', error);
-    ctx.reply('Sorry, I encountered an error processing your request. Please try again later.', mainKeyboard);
+    console.error('Error processing message:', error);
+    // Более информативное сообщение об ошибке
+    try {
+      await ctx.reply('Извините, произошла ошибка при обработке запроса. Пожалуйста, повторите попытку позже.', {
+        ...mainKeyboard,
+        parse_mode: 'HTML' 
+      });
+    } catch (replyError) {
+      console.error('Failed to send error message:', replyError);
+    }
   }
 });
 
@@ -475,8 +589,24 @@ module.exports = async (req, res) => {
   try {
     // Vercel runs this as a serverless function
     if (req.method === 'POST') {
-      await bot.handleUpdate(req.body);
+      // Добавим таймаут для обработки webhook
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Webhook processing timeout')), 9000)
+      );
+      
+      // Обработка запроса с таймаутом
+      try {
+        await Promise.race([
+          bot.handleUpdate(req.body),
+          timeoutPromise
+        ]);
+      } catch (webhookError) {
+        console.error('Webhook processing error:', webhookError);
+        // Проигнорируем ошибку таймаута, чтобы ответить Telegram 200 OK
+      }
     }
+    
+    // Всегда отвечаем успешно, чтобы Telegram не повторял запросы
     res.status(200).send('OK');
   } catch (error) {
     console.error('Webhook error:', error);
