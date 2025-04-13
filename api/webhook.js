@@ -116,6 +116,26 @@ Your message will be forwarded to the ${botInfo.creator} team.
 To send feedback, reply to this message with your comments.`, mainKeyboard);
 });
 
+// Add handler for /ai command (alternative to .ai)
+bot.command('ai', (ctx) => {
+  // Extract the text after the command
+  const text = ctx.message.text.split('/ai').pop().trim();
+  
+  // If there's no text after /ai, ask for a question
+  if (!text) {
+    return ctx.reply('Что вы хотите узнать?', mainKeyboard);
+  }
+  
+  // Set the message text to be processed by the regular message handler
+  ctx.message.text = text;
+  
+  // Pass to the regular message handler (without recursion)
+  bot.handleUpdate({
+    update_id: ctx.update.update_id,
+    message: ctx.message
+  });
+});
+
 // Handle button clicks
 bot.hears('🔍 Ask a question', (ctx) => {
   ctx.reply(`I'm ready to answer your questions! What would you like to know?`, mainKeyboard);
@@ -177,6 +197,49 @@ bot.on('message', async (ctx) => {
       return;
     }
 
+    // Check if message is in a group chat
+    const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+    
+    // Get bot information
+    const botUser = await ctx.telegram.getMe();
+    const botUsername = botUser.username;
+    
+    // Skip message processing in groups unless the bot is mentioned or .ai command is used
+    if (isGroup) {
+      const messageText = ctx.message.text || '';
+      const messageCaption = ctx.message.caption || '';
+      const mentionRegex = new RegExp(`@${botUsername}\\b`, 'i');
+      const aiCommandRegex = /^\.ai\b/i;
+      
+      // Check if message starts with .ai or mentions the bot
+      const isAiCommand = aiCommandRegex.test(messageText) || aiCommandRegex.test(messageCaption);
+      const isBotMentioned = mentionRegex.test(messageText) || mentionRegex.test(messageCaption);
+      
+      // Skip if not a command for the bot in a group chat
+      if (!isAiCommand && !isBotMentioned) {
+        return;
+      }
+      
+      // Remove command or mention from the message text
+      if (ctx.message.text) {
+        if (isAiCommand) {
+          ctx.message.text = ctx.message.text.replace(aiCommandRegex, '').trim();
+        } else if (isBotMentioned) {
+          ctx.message.text = ctx.message.text.replace(mentionRegex, '').trim();
+        }
+      }
+      
+      // Remove command or mention from caption if present
+      if (ctx.message.caption) {
+        if (isAiCommand) {
+          ctx.message.caption = ctx.message.caption.replace(aiCommandRegex, '').trim();
+        } else if (isBotMentioned) {
+          ctx.message.caption = ctx.message.caption.replace(mentionRegex, '').trim();
+        }
+      }
+    }
+    
+    // Continue with normal message processing...
     let userMessage = {
       role: "user",
       content: []
