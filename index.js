@@ -271,22 +271,30 @@ bot.on('message', async (ctx) => {
 // Webhook setup for production (Vercel)
 if (process.env.NODE_ENV === 'production') {
   // Set webhook
-  const PORT = process.env.PORT || 3000;
-  const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://your-vercel-app-url.vercel.app';
+  const PORT = process.env.PORT || 8080;
+  const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://tg-bot-blush.vercel.app';
   
   // Webhook setup for Express
   const express = require('express');
   const app = express();
   
-  // Set the bot webhook
-  bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`);
-  
-  // Web app endpoint
-  app.use(bot.webhookCallback('/webhook'));
+  // Add body parser middleware
+  app.use(express.json());
   
   // Hello world route
   app.get('/', (req, res) => {
     res.send(`${botInfo.name} Bot is running!`);
+  });
+  
+  // Webhook route with error handling
+  app.post('/webhook', (req, res) => {
+    try {
+      // Pass the request to the bot webhook callback
+      bot.handleUpdate(req.body, res);
+    } catch (error) {
+      console.error('Webhook error:', error);
+      res.status(200).send(); // Always return 200 to Telegram
+    }
   });
   
   // Start Express server
@@ -294,6 +302,16 @@ if (process.env.NODE_ENV === 'production') {
     console.log(`Server running on port ${PORT}`);
     console.log(`Bot webhook set to ${WEBHOOK_URL}/webhook`);
   });
+  
+  // Set the webhook with Telegram
+  bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`)
+    .then((result) => {
+      console.log('Webhook set successfully:', result);
+    })
+    .catch((error) => {
+      console.error('Error setting webhook:', error);
+    });
+    
 } else {
   // Launch the bot in polling mode for development
   bot.launch().then(() => {
