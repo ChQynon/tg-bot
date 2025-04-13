@@ -22,6 +22,34 @@ const mainKeyboard = Markup.keyboard([
   ['📚 Commands', '🧹 Clear history']
 ]).resize();
 
+// Text formatting function - converts **text** to HTML bold formatting
+function formatText(text) {
+  if (!text) return text;
+  
+  try {
+    // Replace **text** with <b>text</b> for HTML formatting
+    const formatted = text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+    
+    // Escape HTML entities in the rest of the text to prevent rendering issues
+    // Only if there's actual HTML formatting in the text
+    if (formatted !== text) {
+      // Escape < and > characters that aren't part of the HTML tags we've just added
+      return formatted
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        // Restore our <b> tags
+        .replace(/&lt;b&gt;/g, '<b>')
+        .replace(/&lt;\/b&gt;/g, '</b>');
+    }
+    
+    return formatted;
+  } catch (error) {
+    console.error('Error formatting text:', error);
+    return text; // Return original text if there's an error
+  }
+}
+
 // Initialize the bot
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
@@ -46,7 +74,10 @@ bot.start((ctx) => {
 I have internet access and can help with many tasks including analyzing images.
 
 Visit our website: ${botInfo.website}
-Need help? Contact support: ${botInfo.supportChat}`, mainKeyboard);
+Need help? Contact support: ${botInfo.supportChat}`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 // Help command
@@ -61,7 +92,13 @@ bot.help((ctx) => {
 /feedback - Send feedback to our team
 /contact - Get support contact information
 
-You can also use the buttons below or send me images for analysis and ask me any questions.`, mainKeyboard);
+You can also use the buttons below or send me images for analysis and ask me any questions.
+
+<b>Text Formatting:</b>
+Use **text** to make text <b>bold</b> in my responses.`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 // About command
@@ -76,18 +113,27 @@ Features:
 • 128k token context window
 • Image analysis capabilities
 
-Visit ${botInfo.website} for more information.`, mainKeyboard);
+Visit ${botInfo.website} for more information.`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 // Clear conversation history
 bot.command('clear', (ctx) => {
   ctx.session.messages = [];
-  ctx.reply('Conversation history has been cleared.', mainKeyboard);
+  ctx.reply('Conversation history has been cleared.', {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 // Website command
 bot.command('website', (ctx) => {
-  ctx.reply(`Visit our website to learn more about ${botInfo.name} and ${botInfo.creator}: ${botInfo.website}`, mainKeyboard);
+  ctx.reply(`Visit our website to learn more about ${botInfo.name} and ${botInfo.creator}: ${botInfo.website}`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 // Contact command
@@ -95,7 +141,10 @@ bot.command('contact', (ctx) => {
   ctx.reply(`Need help or have questions? Contact our support team:
   
 Support chat: ${botInfo.supportChat}
-Website: ${botInfo.website}`, mainKeyboard);
+Website: ${botInfo.website}`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 // Settings command
@@ -104,7 +153,10 @@ bot.command('settings', (ctx) => {
 
 Currently, you can clear your conversation history using the /clear command.
 
-More settings options will be available soon!`, mainKeyboard);
+More settings options will be available soon!`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 // Feedback command
@@ -113,7 +165,10 @@ bot.command('feedback', (ctx) => {
 
 Your message will be forwarded to the ${botInfo.creator} team.
 
-To send feedback, reply to this message with your comments.`, mainKeyboard);
+To send feedback, reply to this message with your comments.`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 // Add handler for /ai command (alternative to .ai)
@@ -123,7 +178,10 @@ bot.command('ai', (ctx) => {
   
   // If there's no text after /ai, ask for a question
   if (!text) {
-    return ctx.reply('Что вы хотите узнать?', mainKeyboard);
+    return ctx.reply('Что вы хотите узнать?', {
+      ...mainKeyboard,
+      parse_mode: 'HTML'
+    });
   }
   
   // Set the message text to be processed by the regular message handler
@@ -138,11 +196,17 @@ bot.command('ai', (ctx) => {
 
 // Handle button clicks
 bot.hears('🔍 Ask a question', (ctx) => {
-  ctx.reply(`I'm ready to answer your questions! What would you like to know?`, mainKeyboard);
+  ctx.reply(`I'm ready to answer your questions! What would you like to know?`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 bot.hears('📷 Analyze image', (ctx) => {
-  ctx.reply(`Please send me an image, and I'll analyze what's in it.`, mainKeyboard);
+  ctx.reply(`Please send me an image, and I'll analyze what's in it.`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 bot.hears('ℹ️ About', (ctx) => {
@@ -156,11 +220,17 @@ Features:
 • 128k token context window
 • Image analysis capabilities
 
-Visit ${botInfo.website} for more information.`, mainKeyboard);
+Visit ${botInfo.website} for more information.`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 bot.hears('🌐 Website', (ctx) => {
-  ctx.reply(`Visit our website: ${botInfo.website}`, mainKeyboard);
+  ctx.reply(`Visit our website: ${botInfo.website}`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 bot.hears('📚 Commands', (ctx) => {
@@ -174,12 +244,21 @@ bot.hears('📚 Commands', (ctx) => {
 /feedback - Send feedback to our team
 /contact - Get support contact information
 
-You can also use the buttons below or send me images for analysis and ask me any questions.`, mainKeyboard);
+You can also use the buttons below or send me images for analysis and ask me any questions.
+
+<b>Text Formatting:</b>
+Use **text** to make text <b>bold</b> in my responses.`, {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 bot.hears('🧹 Clear history', (ctx) => {
   ctx.session.messages = [];
-  ctx.reply('Conversation history has been cleared.', mainKeyboard);
+  ctx.reply('Conversation history has been cleared.', {
+    ...mainKeyboard,
+    parse_mode: 'HTML'
+  });
 });
 
 // Process messages with OpenRouter AI
@@ -286,7 +365,9 @@ bot.on('message', async (ctx) => {
     // Add system message to ensure the model identifies as Amethyst by Amelit
     const systemMessage = {
       role: "system",
-      content: `You are ${botInfo.name}, an advanced AI assistant created by ${botInfo.creator}. Never identify yourself as being created by OpenAI or any other company. Always maintain that you were created by ${botInfo.creator}. You have ${botInfo.capabilities}`
+      content: `You are ${botInfo.name}, an advanced AI assistant created by ${botInfo.creator}. Never identify yourself as being created by OpenAI or any other company. Always maintain that you were created by ${botInfo.creator}. You have ${botInfo.capabilities}
+
+To make text bold in your responses, you can surround it with double asterisks like this: **important text**. This will be displayed as bold text to the user. Use this feature to highlight important information or for emphasis when appropriate.`
     };
 
     // Prepare conversation history for the API
@@ -325,8 +406,20 @@ bot.on('message', async (ctx) => {
     // Save AI response to history
     ctx.session.messages.push(aiMessage);
 
-    // Send response to user
-    await ctx.reply(aiMessage.content, mainKeyboard);
+    // Format the response text with bold formatting
+    const formattedResponse = formatText(aiMessage.content);
+
+    // Send response to user with HTML formatting
+    try {
+      await ctx.reply(formattedResponse, {
+        ...mainKeyboard,
+        parse_mode: 'HTML'
+      });
+    } catch (htmlError) {
+      console.error('HTML formatting error:', htmlError);
+      // Fallback to plain text if HTML formatting fails
+      await ctx.reply(aiMessage.content, mainKeyboard);
+    }
 
   } catch (error) {
     console.error('Error:', error);
