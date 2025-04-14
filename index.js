@@ -36,34 +36,6 @@ const mainKeyboard = Markup.keyboard([
   ['📚 Commands', '🧹 Clear history']
 ]).resize();
 
-// Text formatting function - converts **text** to HTML bold formatting
-function formatText(text) {
-  if (!text) return text;
-  
-  try {
-    // Replace **text** with <b>text</b> for HTML formatting
-    const formatted = text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
-    
-    // Escape HTML entities in the rest of the text to prevent rendering issues
-    // Only if there's actual HTML formatting in the text
-    if (formatted !== text) {
-      // Escape < and > characters that aren't part of the HTML tags we've just added
-      return formatted
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        // Restore our <b> tags
-        .replace(/&lt;b&gt;/g, '<b>')
-        .replace(/&lt;\/b&gt;/g, '</b>');
-    }
-    
-    return formatted;
-  } catch (error) {
-    console.error('Error formatting text:', error);
-    return text; // Return original text if there's an error
-  }
-}
-
 // Welcome message
 bot.start((ctx) => {
   ctx.reply(`Hello! I'm ${botInfo.name}, an AI assistant created by ${botInfo.creator}. 
@@ -260,57 +232,25 @@ bot.on('message', async (ctx) => {
     // Send "typing" action
     await ctx.replyWithChatAction('typing');
 
-    // Использование функции с таймаутом и повторными попытками
-    let response;
-    let retries = 2; // Количество попыток
-    
-    while (retries >= 0) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 секунд таймаут
-        
-        response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-            "HTTP-Referer": process.env.SITE_URL,
-            "X-Title": process.env.SITE_NAME,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            "model": "openrouter/optimus-alpha",
-            "messages": conversationHistory
-          }),
-          signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        if (response.ok) {
-          break;
-        }
-        
-        retries--;
-        if (retries >= 0) {
-          console.log(`API request failed, retrying... (${retries} attempts left)`);
-          await new Promise(resolve => setTimeout(resolve, 1000)); // Ждем 1 секунду перед повторной попыткой
-        }
-      } catch (fetchError) {
-        console.error('Fetch error:', fetchError);
-        retries--;
-        if (retries >= 0) {
-          console.log(`API request error, retrying... (${retries} attempts left)`);
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        } else {
-          throw fetchError;
-        }
-      }
-    }
+    // Call OpenRouter API
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "HTTP-Referer": process.env.SITE_URL,
+        "X-Title": process.env.SITE_NAME,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        "model": "openrouter/optimus-alpha",
+        "messages": conversationHistory
+      })
+    });
 
-    if (!response || !response.ok) {
-      const errorData = response ? await response.json().catch(() => ({})) : {};
+    if (!response.ok) {
+      const errorData = await response.json();
       console.error('OpenRouter API error:', errorData);
-      throw new Error(`API request failed with status ${response ? response.status : 'unknown'}`);
+      throw new Error(`API request failed with status ${response.status}`);
     }
 
     const data = await response.json();
@@ -319,25 +259,12 @@ bot.on('message', async (ctx) => {
     // Save AI response to history
     ctx.session.messages.push(aiMessage);
 
-    // Send response to user with proper formatting
-    try {
-      // Attempt to use HTML formatting
-      const formattedText = formatText(aiMessage.content);
-      await ctx.reply(formattedText, {
-        ...mainKeyboard,
-        parse_mode: 'HTML'
-      });
-    } catch (formatError) {
-      console.error('Formatting error:', formatError);
-      // Fallback to plain text if HTML formatting fails
-      await ctx.reply(aiMessage.content, mainKeyboard);
-    }
+    // Send response to user
+    await ctx.reply(aiMessage.content, mainKeyboard);
 
   } catch (error) {
-    console.error('Error processing message:', error);
-    await ctx.reply('Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз через несколько секунд.', {
-      ...mainKeyboard
-    });
+    console.error('Error:', error);
+    ctx.reply('Sorry, I encountered an error processing your request. Please try again later.', mainKeyboard);
   }
 });
 

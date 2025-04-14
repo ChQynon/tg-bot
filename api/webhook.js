@@ -8,7 +8,7 @@ const path = require('path');
 require('dotenv').config();
 
 // Настройки и тайм-ауты
-const API_TIMEOUT = 12000; // 12 секунд таймаут для API запросов
+const API_TIMEOUT = 12000; // 12 секунд максимальное время ожидания ответа от API
 const DEFAULT_MODEL = "openrouter/optimus-alpha"; // Основная модель
 const FALLBACK_MODEL = "openrouter/auto"; // Резервная модель, если основная не отвечает
 
@@ -106,8 +106,8 @@ bot.use((ctx, next) => {
   return next();
 });
 
-// Функция для вызова API с таймаутом
-async function fetchWithTimeout(url, options, timeout = API_TIMEOUT) {
+// Функция тайм-аута для fetch запросов
+const fetchWithTimeout = async (url, options, timeout = API_TIMEOUT) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   
@@ -122,7 +122,7 @@ async function fetchWithTimeout(url, options, timeout = API_TIMEOUT) {
     clearTimeout(id);
     throw error;
   }
-}
+};
 
 // Функция для вызова OpenRouter с повторными попытками и резервной моделью
 async function callOpenRouterAPI(messages, retries = 1) {
@@ -383,6 +383,8 @@ bot.hears('🧹 Clear history', (ctx) => {
 // Process messages with OpenRouter AI
 bot.on('message', async (ctx) => {
   try {
+    console.log('Received message from user:', ctx.from.id, 'text:', ctx.message.text?.substring(0, 50) || '[no text]');
+    
     // Skip processing for button commands
     if (ctx.message.text && [
       '🔍 Ask a question', 
@@ -393,6 +395,14 @@ bot.on('message', async (ctx) => {
       '🧹 Clear history'
     ].includes(ctx.message.text)) {
       return;
+    }
+
+    // Immediately send typing action to show the bot is responsive
+    try {
+      await ctx.replyWithChatAction('typing');
+    } catch (typingError) {
+      console.error('Error sending typing action:', typingError);
+      // Continue even if typing action fails
     }
 
     // Check if message is in a group chat
@@ -511,6 +521,11 @@ bot.on('message', async (ctx) => {
       });
     }
 
+    // Инициализируем сессию, если её нет
+    if (!ctx.session.messages) {
+      ctx.session.messages = [];
+    }
+
     // Сохраняем только последние 5 сообщений в истории для экономии памяти
     if (ctx.session.messages.length > 10) {
       ctx.session.messages = ctx.session.messages.slice(-5);
@@ -535,74 +550,45 @@ Keep your responses concise and to the point. Focus on providing accurate and he
       ...ctx.session.messages.slice(-3) // Limit to just last 3 messages for faster response
     ];
 
-    // Send "typing" action
+    // Повторно отправляем сигнал набора текста для длительной обработки
     await ctx.replyWithChatAction('typing');
-
-    // Call OpenRouter API with timeout and retries
-    let response;
-    let retries = 2; // Количество попыток
     
-    while (retries > 0) {
-      try {
-        response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-            "HTTP-Referer": process.env.SITE_URL,
-            "X-Title": process.env.SITE_NAME,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            "model": "openrouter/optimus-alpha",
-            "messages": conversationHistory
-          })
-        });
+    console.log('Calling API for user:', ctx.from.id);
 
-        if (response.ok) {
-          break;
-        }
-        
-        retries--;
-        if (retries > 0) {
-          console.log(`API request failed, retrying... (${retries} attempts left)`);
-          await new Promise(resolve => setTimeout(resolve, 1000)); // Ждем 1 секунду перед повторной попыткой
-        }
-      } catch (error) {
-        retries--;
-        if (retries > 0) {
-          console.log(`API request error, retrying... (${retries} attempts left)`);
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('OpenRouter API error:', errorData);
-      throw new Error(`API request failed with status ${response.status}`);
-    }
-
-    const data = await response.json();
-    const aiMessage = data.choices[0].message;
-
-    // Save AI response to history
-    ctx.session.messages.push(aiMessage);
-
-    // Format the response text with bold formatting
-    const formattedResponse = formatText(aiMessage.content);
-
-    // Send response to user with HTML formatting
     try {
-      await ctx.reply(formattedResponse, {
+      // Вызываем API с улучшенным обработчиком и таймаутом
+      const data = await callOpenRouterAPI(conversationHistory);
+      console.log('Received API response for user:', ctx.from.id);
+      
+      const aiMessage = data.choices[0].message;
+
+      // Save AI response to history
+      ctx.session.messages.push(aiMessage);
+
+      // Format the response text with bold formatting
+      const formattedResponse = formatText(aiMessage.content);
+
+      // Send response to user with HTML formatting
+      try {
+        console.log('Sending reply to user:', ctx.from.id);
+        await ctx.reply(formattedResponse, {
+          ...mainKeyboard,
+          parse_mode: 'HTML'
+        });
+        console.log('Reply sent successfully to user:', ctx.from.id);
+      } catch (htmlError) {
+        console.error('HTML formatting error:', htmlError);
+        // Fallback to plain text if HTML formatting fails
+        await ctx.reply(aiMessage.content, mainKeyboard);
+      }
+    } catch (apiError) {
+      console.error('API error:', apiError);
+      
+      // Отправляем пользователю сообщение о проблеме
+      await ctx.reply('Извините, возникла проблема при получении ответа. Пожалуйста, повторите ваш запрос через несколько секунд.', {
         ...mainKeyboard,
         parse_mode: 'HTML'
       });
-    } catch (htmlError) {
-      console.error('HTML formatting error:', htmlError);
-      // Fallback to plain text if HTML formatting fails
-      await ctx.reply(aiMessage.content, mainKeyboard);
     }
 
   } catch (error) {
@@ -622,29 +608,45 @@ Keep your responses concise and to the point. Focus on providing accurate and he
 // Serverless function handler
 module.exports = async (req, res) => {
   try {
+    // Сразу отвечаем Telegram, не дожидаясь обработки сообщения
+    // Это критически важно для бессерверных функций, чтобы избежать 
+    // завершения функции до отправки ответа пользователю
+    res.status(200).send('OK');
+    
     // Vercel runs this as a serverless function
     if (req.method === 'POST') {
-      // Добавим таймаут для обработки webhook
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Webhook processing timeout')), 9000)
-      );
-      
-      // Обработка запроса с таймаутом
+      // Обрабатываем запрос уже после отправки ответа Telegram
+      // Чтобы функция не завершилась до отправки ответа пользователю
       try {
-        await Promise.race([
-          bot.handleUpdate(req.body),
-          timeoutPromise
-        ]);
+        console.log('Processing webhook update:', JSON.stringify(req.body).substring(0, 500) + '...');
+        
+        // Создаем обещание, которое никогда не разрешится, чтобы предотвратить 
+        // преждевременное завершение функции
+        const neverResolve = new Promise(() => {});
+        
+        // Обработка запроса с возможностью отправки ответа пользователю
+        // происходит асинхронно, но мы не ждем её завершения перед ответом Telegram
+        const botResponsePromise = bot.handleUpdate(req.body);
+        
+        // Запускаем обработку, но не ждем её завершения
+        botResponsePromise.catch(error => {
+          console.error('Error in bot.handleUpdate:', error);
+        });
+        
+        // Важно: в бессерверной среде функция может завершиться до отправки ответа пользователю,
+        // поэтому мы используем таймаут, чтобы дать боту шанс отправить ответ
+        // Это должно решить проблему с "ответом через раз"
+        await new Promise(resolve => setTimeout(resolve, 9000));
+        
       } catch (webhookError) {
         console.error('Webhook processing error:', webhookError);
-        // Проигнорируем ошибку таймаута, чтобы ответить Telegram 200 OK
       }
     }
-    
-    // Всегда отвечаем успешно, чтобы Telegram не повторял запросы
-    res.status(200).send('OK');
   } catch (error) {
     console.error('Webhook error:', error);
-    res.status(200).send('OK'); // Always send 200 to Telegram
+    // Даже в случае ошибки отвечаем 200, чтобы Telegram не повторял запросы
+    if (!res.headersSent) {
+      res.status(200).send('OK');
+    }
   }
 }; 
